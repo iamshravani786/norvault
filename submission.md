@@ -17,8 +17,8 @@ git push -u origin main
 ```
 
 ### 3. Exact commit hash
-The commit containing the final code, the fixed React frontend build, and the `norvault.db` containing 1050 verified company profiles is:
-**`b3728b1b01449d7fd23340cfe76390e37bfb9a8c`**
+The commit containing the final code, the fixed React frontend build, the `norvault.db` containing 1050 verified company profiles, and the cleaned up repository is:
+**`303bf8a6f6e4f029f8a14ccfef3227ed352a5412`**
 
 ### 4. One command to run it
 You can run the entire system (backend and frontend) with a single command using the included batch script from the root directory:
