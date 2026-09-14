@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: norvault-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: norvault
+      POSTGRES_PASSWORD: norvault
+      POSTGRES_DB: norvault
+    ports:
+      - "5432:5432"
+    volumes:
+      - norvault_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U norvault"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: norvault-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://norvault:norvault@db:5432/norvault
+      BRREG_BASE_URL: https://data.brreg.no
+      MAX_REQUESTS: "2000"
+      MAX_COST: "10.00"
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: norvault-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  norvault_pgdata:

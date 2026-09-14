@@ -1,0 +1,86 @@
+[
+  {
+    "org_number": "923609016",
+    "name": "EQUINOR ASA",
+    "type": "large_asa",
+    "expected_facts": {
+      "legal_name": "EQUINOR ASA",
+      "org_form": "ASA",
+      "municipality": "STAVANGER",
+      "industry": "06.100",
+      "has_employees": true,
+      "has_financial_statements": true,
+      "has_board_members": true,
+      "has_subsidiaries": true
+    },
+    "edge_cases": ["large_company", "parent_subsidiary_collision", "has_konsern_accounts"],
+    "notes": "Major energy company. Test for parent/subsidiary separation."
+  },
+  {
+    "org_number": "985399077",
+    "name": "DNB BANK ASA",
+    "type": "large_asa",
+    "expected_facts": {
+      "legal_name": "DNB BANK ASA",
+      "org_form": "ASA",
+      "has_employees": true,
+      "has_financial_statements": true,
+      "has_board_members": true
+    },
+    "edge_cases": ["financial_institution", "subsidiary_of_dnb_group"],
+    "notes": "Major bank. Subsidiary of DNB ASA holding company."
+  },
+  {
+    "org_number": "910244132",
+    "name": "TELENOR ASA",
+    "type": "large_asa",
+    "expected_facts": {
+      "legal_name": "TELENOR ASA",
+      "org_form": "ASA",
+      "has_employees": true,
+      "has_financial_statements": true
+    },
+    "edge_cases": ["telecom", "international_operations"],
+    "notes": "Major telecom company."
+  },
+  {
+    "org_number": "914778271",
+    "name": "NORSK HYDRO ASA",
+    "type": "large_asa",
+    "expected_facts": {
+      "legal_name": "NORSK HYDRO ASA",
+      "org_form": "ASA"
+    },
+    "edge_cases": ["renamed_company"],
+    "notes": "Historically renamed. Tests historical name handling."
+  },
+  {
+    "org_number": "990886343",
+    "name": "AKER BP ASA",
+    "type": "large_asa",
+    "expected_facts": {
+      "legal_name": "AKER BP ASA",
+      "org_form": "ASA"
+    },
+    "edge_cases": ["renamed_company", "merger_history"],
+    "notes": "Formerly Det Norske Oljeselskap. Tests rename tracking."
+  },
+  {
+    "org_number": "811015642",
+    "name": "EXAMPLE SMALL ENK",
+    "type": "sole_proprietorship",
+    "expected_facts": {
+      "org_form": "ENK"
+    },
+    "edge_cases": ["no_financial_statements", "minimal_data", "sole_proprietorship"],
+    "notes": "ENK typically has no annual accounts in Regnskapsregisteret."
+  },
+  {
+    "org_number": "999999999",
+    "name": "NONEXISTENT COMPANY",
+    "type": "invalid",
+    "expected_facts": {},
+    "edge_cases": ["not_found", "invalid_org_number"],
+    "notes": "Should return 404 gracefully."
+  }
+]

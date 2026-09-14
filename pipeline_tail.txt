@@ -1,0 +1,358 @@
+    async def _persist_financials(
+        self, company: Company, data: list[dict[str, Any]] | dict[str, Any]
+    ) -> None:
+        records = data if isinstance(data, list) else [data]
+        for rec in records:
+            period = rec.get("regnskapsperiode", {})
+            period_to = period.get("tilDato")
+            if not period_to:
+                continue
+            try:
+                fiscal_year = int(period_to[:4])
+            except (ValueError, TypeError):
+                continue
+
+            resultat = rec.get("resultatregnskap", {}) or {}
+            dr = resultat.get("driftsresultat", {}) or {}
+            di = dr.get("driftsinntekter", {}) or {}
+            dk = dr.get("driftskostnader", {}) or {}
+            fr = resultat.get("finansresultat", {}) or {}
+            fi = fr.get("finansinntekter", {}) or {}
+            fk = fr.get("finanskostnader", {}) or {}
+            eiendeler = rec.get("eiendeler", {}) or {}
+            om = eiendeler.get("omloepsmidler", {}) or {}
+            ekg = rec.get("egenkapitalGjeld", {}) or {}
+            ek = ekg.get("egenkapital", {}) or {}
+            gjeld = ekg.get("gjeld", {}) or {}
+            lg = gjeld.get("langsiktigGjeld", {}) or {}
+            kg = gjeld.get("kortsiktigGjeld", {}) or {}
+
+            def _dec(v: Any) -> Decimal | None:
+                if v is None:
+                    return None
+                try:
+                    return Decimal(str(v))
+                except Exception:
+                    return None
+
+            fs = FinancialStatement(
+                company_id=company.id,
+                fiscal_year=fiscal_year,
+                statement_type=rec.get("regnskapstype", "SELSKAP"),
+                currency=rec.get("valuta", "NOK"),
+                revenue=_dec(di.get("sumDriftsinntekter")),
+                operating_profit=_dec(dr.get("driftsresultat")),
+                net_income=_dec(resultat.get("aarsresultat")),
+                total_assets=_dec(eiendeler.get("sumEiendeler")),
+                equity=_dec(ek.get("sumEgenkapital")),
+                total_debt=_dec(gjeld.get("sumGjeld")),
+                current_assets=_dec(om.get("sumOmloepsmidler")),
+                current_liabilities=_dec(kg.get("sumKortsiktigGjeld")),
+                long_term_debt=_dec(lg.get("sumLangsiktigGjeld")),
+                cash_and_equivalents=_dec(om.get("bankinnskuddKontanterOgLignende")),
+                salary_costs=_dec(dk.get("lonnskostnad")),
+                financial_income=_dec(fi.get("sumFinansinntekter")),
+                financial_expenses=_dec(fk.get("sumFinanskostnader")),
+                tax_expense=_dec(resultat.get("skattekostnadPaaOrdinaertResultat")),
+                ebt=_dec(resultat.get("ordinaertResultatFoerSkattekostnad")),
+                raw_data=rec,
+                source_url=f"https://data.brreg.no/regnskapsregisteret/regnskap/{company.org_number}",
+                retrieved_at=datetime.now(timezone.utc),
+            )
+            try:
+                period_from = period.get("fraDato")
+                if period_from:
+                    fs.period_from = date.fromisoformat(period_from)
+                if period_to:
+                    fs.period_to = date.fromisoformat(period_to)
+            except (ValueError, TypeError):
+                pass
+
+            self.db.add(fs)
+
+    async def _persist_subunits(
+        self, company: Company, data: dict[str, Any]
+    ) -> None:
+        embedded = data.get("_embedded", {})
+        subunits = embedded.get("underenheter", [])
+        for sub in subunits:
+            sub_org = sub.get("organisasjonsnummer")
+            if not sub_org:
+                continue
+            sub_company = await self._get_existing_company(sub_org)
+            if not sub_company:
+                sub_company = Company(
+                    org_number=sub_org,
+                    name=sub.get("navn", ""),
+                    org_form_code=sub.get("organisasjonsform", {}).get("kode"),
+                    profile_status="seeded",
+                    status="active",
+                )
+                self.db.add(sub_company)
+                await self.db.flush()
+
+            rel = CorporateRelationship(
+                parent_company_id=company.id,
+                child_company_id=sub_company.id,
+                relationship_type="BRANCH_OF",
+            )
+            self.db.add(rel)
+
+    async def _detect_changes(
+        self, company: Company, new_facts: list[ExtractedFact]
+    ) -> list[dict[str, Any]]:
+        changes: list[dict[str, Any]] = []
+        if not company.id:
+            return changes
+
+        result = await self.db.execute(
+            select(CompanyFact).where(
+                CompanyFact.company_id == company.id, CompanyFact.is_current == True
+            )
+        )
+        existing = {f.predicate: f for f in result.scalars().all()}
+
+        for fact in new_facts:
+            old = existing.get(fact.predicate)
+            if old and old.value_text != str(fact.value):
+                change_type = "IDENTITY" if fact.fact_type in ("legal_name", "org_form") else "LEGAL"
+                if fact.fact_type in ("registered_address", "postal_address"):
+                    change_type = "LOCATION"
+                elif fact.fact_type in ("board_member", "ceo"):
+                    change_type = "PEOPLE"
+                elif fact.fact_type == "employee_count":
+                    change_type = "LEGAL"
+                elif "financial" in fact.fact_type:
+                    change_type = "FINANCIAL"
+
+                changes.append({
+                    "change_type": change_type,
+                    "field": fact.predicate,
+                    "old_value": old.value_text,
+                    "new_value": str(fact.value),
+                    "source": fact.source_adapter_id,
+                    "confidence": fact.confidence,
+                    "detected_at": datetime.now(timezone.utc).isoformat(),
+                })
+
+                event = CompanyEvent(
+                    company_id=company.id,
+                    event_type=change_type,
+                    event_date=date.today(),
+                    description=f"{fact.predicate}: {old.value_text} → {fact.value}",
+                    old_value=old.value_text,
+                    new_value=str(fact.value),
+                )
+                self.db.add(event)
+
+        return changes
+
+    async def _build_passport_from_db(
+        self, company: Company, run_id: str, start_time: float
+    ) -> dict[str, Any]:
+        return self._assemble_passport(
+            org_number=company.org_number,
+            raw_enheter={},
+            published_facts=[],
+            identity_result=None,
+            conflicts=[],
+            audit_reasons=[],
+            graph_data={"nodes": [], "edges": []},
+            changes=[],
+            roller_data=None,
+            regnskap_data=None,
+            underenheter_data=None,
+            run_id=run_id,
+            elapsed=time.monotonic() - start_time,
+            budget_status=None,
+        )
+
+    # ------------------------------------------------------------------
+    # Passport assembly
+    # ------------------------------------------------------------------
+
+    def _assemble_passport(
+        self,
+        org_number: str,
+        raw_enheter: dict[str, Any],
+        published_facts: list[ExtractedFact],
+        identity_result: Any,
+        conflicts: list[Any],
+        audit_reasons: list[str],
+        graph_data: dict[str, Any],
+        changes: list[dict[str, Any]],
+        roller_data: dict[str, Any] | None,
+        regnskap_data: Any,
+        underenheter_data: dict[str, Any] | None,
+        run_id: str,
+        elapsed: float,
+        budget_status: Any,
+        rejected_facts: list[ExtractedFact] | None = None
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+
+        response_facts = []
+        for i, fact in enumerate(published_facts):
+            response_facts.append({
+                "id": i + 1,
+                "fact_type": fact.fact_type,
+                "subject": fact.subject,
+                "predicate": fact.predicate,
+                "display_value": str(fact.value),
+                "value_numeric": float(fact.value) if isinstance(fact.value, (int, float, Decimal)) else None,
+                "source_name": fact.source_adapter_id,
+                "source_url": fact.source_url,
+                "source_date": fact.source_date,
+                "retrieved_at": fact.retrieved_at.isoformat(),
+                "confidence": fact.confidence,
+                "identity_match_score": fact.identity_match_score,
+                "fact_category": str(fact.fact_category).lower() if hasattr(fact, 'fact_category') and fact.fact_category else 'observed',
+                "freshness_status": "CURRENT",
+                "why_this_company": (
+                    f"Organization number {org_number} verified via direct API lookup "
+                    f"at {fact.source_url}"
+                ),
+            })
+
+        roles = []
+        if roller_data:
+            for group in roller_data.get("rollegrupper", []):
+                for role in group.get("roller", []):
+                    person = role.get("person", {})
+                    entity = role.get("enhet", {})
+                    roles.append({
+                        "role_type_code": role.get("type", {}).get("kode", ""),
+                        "role_type_description": role.get("type", {}).get("beskrivelse", ""),
+                        "person_first_name": person.get("navn", {}).get("fornavn") if person.get("navn") else None,
+                        "person_last_name": person.get("navn", {}).get("etternavn") if person.get("navn") else None,
+                        "person_birth_date": person.get("fodselsdato"),
+                        "is_resigned": bool(role.get("fratradt")),
+                        "entity_name": entity.get("navn")[0] if isinstance(entity.get("navn"), list) else str(entity.get("navn")) if entity.get("navn") else None
+                    })
+
+        addresses = []
+        for addr_type, key in [("business", "forretningsadresse"), ("postal", "postadresse")]:
+            addr = raw_enheter.get(key)
+            if addr:
+                addresses.append({
+                    "address_type": addr_type,
+                    "street_lines": addr.get("adresse", []),
+                    "postal_code": addr.get("postnummer"),
+                    "city": addr.get("poststed"),
+                    "municipality_name": addr.get("kommune"),
+                })
+
+        industries = []
+        for i in range(1, 4):
+            nk = raw_enheter.get(f"naeringskode{i}")
+            if nk:
+                industries.append({
+                    "priority": i,
+                    "code": nk.get("kode", ""),
+                    "description": nk.get("beskrivelse"),
+                    "is_primary": i == 1,
+                })
+
+        subsidiaries = []
+        if underenheter_data:
+            embedded = underenheter_data.get("_embedded", {})
+            for sub in embedded.get("underenheter", []):
+                subsidiaries.append({
+                    "organization_number": sub.get("organisasjonsnummer", ""),
+                    "name": sub.get("navn", ""),
+                    "org_form_code": sub.get("organisasjonsform", {}).get("kode"),
+                })
+
+        conflict_list = []
+        for c in conflicts:
+            conflict_list.append({
+                "fact_type": getattr(c, "fact_type", str(c)),
+                "values": getattr(c, "values", []),
+                "resolution": getattr(c, "resolution", "UNRESOLVED"),
+                "resolution_reasoning": getattr(c, "reasoning", None),
+            })
+
+        identity_dict = {
+            "organization_number": org_number,
+            "canonical_name": raw_enheter.get("navn", ""),
+            "match_score": identity_result.confidence if hasattr(identity_result, "confidence") else 1.0,
+            "decision": identity_result.decision if hasattr(identity_result, "decision") else "VERIFIED",
+            "reasoning": f"Organization number {org_number} directly matched in BRREG API response.",
+            "matched_signals": [],
+            "conflicting_signals": []
+        }
+
+        org_form = raw_enheter.get("organisasjonsform", {})
+        budget_dict = None
+        if budget_status:
+            budget_dict = {
+                "requests_used": budget_status.requests_used,
+                "requests_remaining": budget_status.remaining_requests,
+                "requests_saved_by_cache": budget_status.requests_saved_by_cache,
+                "cache_hit_rate": (
+                    budget_status.requests_saved_by_cache
+                    / max(budget_status.requests_used + budget_status.requests_saved_by_cache, 1)
+                ),
+                "external_cost_estimate": float(budget_status.cost_estimate),
+                "cost_remaining": float(budget_status.remaining_budget),
+            }
+
+        sources_consulted = [
+            {
+                "source_name": "Brønnøysund Enhetsregisteret",
+                "source_url": f"https://data.brreg.no/enhetsregisteret/api/enheter/{org_number}",
+                "authority_level": 1,
+                "retrieved_at": now,
+                "facts_extracted": len([f for f in published_facts if f.source_adapter_id == "brreg_enheter"]),
+            },
+            {
+                "source_name": "Brønnøysund Roller",
+                "source_url": f"https://data.brreg.no/enhetsregisteret/api/enheter/{org_number}/roller",
+                "authority_level": 1,
+                "retrieved_at": now,
+                "facts_extracted": len([f for f in published_facts if f.source_adapter_id == "brreg_roller"]),
+            },
+            {
+                "source_name": "Brønnøysund Regnskapsregisteret",
+                "source_url": f"https://data.brreg.no/regnskapsregisteret/regnskap/{org_number}",
+                "authority_level": 1,
+                "retrieved_at": now,
+                "facts_extracted": len([f for f in published_facts if f.source_adapter_id == "brreg_regnskap"]),
+            },
+        ]
+
+        financial_summary = None
+
+        return {
+            "company_name": raw_enheter.get("navn", ""),
+            "organization_number": org_number,
+            "organization_type": org_form.get("beskrivelse"),
+            "organization_type_code": org_form.get("kode"),
+            "status": (
+                "bankrupt" if raw_enheter.get("konkurs")
+                else "dissolved" if raw_enheter.get("slettedato")
+                else "liquidating" if raw_enheter.get("underAvvikling")
+                else "active"
+            ),
+            "identity_confidence": identity_result.confidence if identity_result else 1.0,
+            "last_verified": now,
+            "proof_score": len(published_facts) / max(len(published_facts) + (len(rejected_facts) if rejected_facts else 0), 1),
+            "facts": response_facts,
+            "financial_summary": financial_summary,
+            "roles": roles,
+            "addresses": addresses,
+            "industries": industries,
+            "parent": None,
+            "subsidiaries": subsidiaries,
+            "identity_match": identity_dict,
+            "conflicts": conflict_list,
+            "timeline": [],
+            "evidence_graph": graph_data,
+            "sources_consulted": sources_consulted,
+            "changes_detected": changes,
+            "budget": budget_dict,
+            "run_id": run_id,
+            "retrieval_time_sec": round(elapsed, 3),
+            "requests_made": budget_status.requests_used if budget_status else 0,
+            "cache_hits": budget_status.requests_saved_by_cache if budget_status else 0,
+        }

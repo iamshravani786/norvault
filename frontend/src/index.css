@@ -1,0 +1,54 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Navy & White Theme (Light Mode layout, Navy accents) */
+  --color-graphite-950: #f1f5f9; /* Main background - off white */
+  --color-graphite-900: #ffffff; /* Cards / Header - pure white */
+  --color-graphite-800: #f8fafc; /* Subtle inner backgrounds */
+  --color-graphite-700: #e2e8f0; /* Borders */
+  --color-graphite-600: #cbd5e1; /* Stronger borders */
+  --color-graphite-500: #94a3b8; /* Muted text */
+  --color-graphite-400: #64748b; /* Secondary text */
+  --color-graphite-300: #475569;
+  --color-graphite-200: #334155;
+  --color-graphite-100: #0f172a; /* Primary Text - Navy */
+  
+  /* Navy Blue Accents */
+  --color-electric: #1e3a8a; /* Deep Navy Blue */
+  --color-electric-bright: #1d4ed8; /* Vibrant Navy */
+  --color-electric-dim: #1e40af; 
+  
+  /* Semantic Colors */
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626; 
+  --color-info: #0284c7;
+  
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+:root {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-graphite-950);
+  color: var(--color-graphite-100);
+  min-height: 100vh;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-graphite-900);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-graphite-600);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-graphite-500);
+}
